@@ -1,0 +1,2 @@
+# terminal_and_child_process
+端末と子プロセスの例
