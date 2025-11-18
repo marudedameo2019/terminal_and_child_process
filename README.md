@@ -24,3 +24,6 @@ $ cmake -B 任意のビルド結果格納用ディレクトリ -DCMAKE_BUILD_TYP
 $ cmake --build 任意のビルド結果格納用ディレクトリ --verbose
 ...
 ```
+
+## script replay demo
+https://marudedameo2019.github.io/terminal_and_child_process/
