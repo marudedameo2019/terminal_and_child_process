@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Script Replay with xterm.js</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+        }
+        #terminal-container {
+            margin: 20px 0;
+            border: 1px solid #ccc;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            box-sizing: border-box;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Script Replay Demo</h1>
+
+    <div>
+        <a id="replay-url" href="" style="display:block; margin:10px 0;"></a>
+    </div>
+
+    <p>
+    <div>
+        scriptコマンドのログ出力とタイミング出力を使用して、xterm.jsで再生する静的HTMLです。
+    </div>
+    </p>
+    <p>
+    <div>
+        <code>
+script -T file.tm
+        </code>
+    </div>
+    <div>
+        で記録されたデータなら、WindowsのMSYS2環境では
+    </div>
+    <div>
+        <code>
+gzip -c file.tm | base64 | clip
+        </code>
+    </div>
+    <div>
+        でタイミングデータをクリップボードにコピーして、下のタイミングデータに貼り付けて、さらに
+    </div>
+    <div>
+        <code>
+gzip -c typescript | base64.exe |clip
+        </code>
+    </div>
+    <div>
+        でログデータもクリップボードにコピーして、下のログデータに貼り付けてください。貼り付けできたら[再生開始]で再生されます。再生し始めたら上の方にURLが出ると思いますが、このURLが貼り付けたデータを含むURLになります。
+    </div>
+    </p>
+    <div>
+        <label for="timing-data">タイミングデータ (timing file content) - Gzip Base64 エンコード:</label>
+        <textarea id="timing-data" placeholder="例: 0.123456 12&#10;0.500000 5&#10;..."></textarea>
+    </div>
+
+    <div>
+        <label for="log-data">ログデータ (script log content) - Gzip Base64 エンコード:</label>
+        <textarea id="log-data" placeholder="gzipした後base64エンコードした文字列をここにペースト..."></textarea>
+    </div>
+
+    <button id="replay-button">再生開始</button>
+
+    <hr>
+
+    <input type="number" id="term-x" value="120"> x <input type="number" id="term-y" value="30">
+    <div id="terminal-container"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", ()=>{
+            const term = new Terminal({
+                cursorBlink: true,
+                cols: 120,
+                rows: 30,
+                theme: {
+                    background: '#000000'
+                }
+            });
+            const fitAddon = new FitAddon.FitAddon();
+            term.loadAddon(fitAddon);
+
+            const dom = {
+                timingInput: document.getElementById('timing-data'),
+                logInput: document.getElementById('log-data'),
+                replayButton: document.getElementById('replay-button'),
+                term_x: document.getElementById('term-x'),
+                term_y: document.getElementById('term-y'),
+                term_container: document.getElementById('terminal-container'),
+            }
+            term.open(dom.term_container);
+            fitAddon.fit();
+
+            const decoder = new TextDecoder();
+            const sizere = /Script started on \d+-\d+-\d+ \d+:\d+:\d+\+\d+:\d+ \[TERM=\"[^"]+\" TTY=\"[^"]+\" COLUMNS=\"(\d+)\" LINES=\"(\d+)\"\]/;
+
+            function setParamsFromQueryString() {
+                const p = new URLSearchParams(location.search);
+                if (p.has("timing")) dom.timingInput.value = p.get("timing");
+                if (p.has("log")) dom.logInput.value = p.get("log");
+                if (p.has("cols")) dom.term_x.value = p.get("cols");
+                if (p.has("rows")) dom.term_y.value = p.get("rows");
+            }
+
+            function ungzipBase64(base64GzipData) {
+                return pako.ungzip(Uint8Array.fromBase64(base64GzipData), { to: 'Uint8Array' });
+            }
+
+            function getFirstLineIndex(u8array) {
+                const LF = 0x0a;
+                let i = 0;
+                for (; i < u8array.length && u8array[i] !== LF; ++i);
+                return i == u8array.length ? -1 : i;
+            }
+
+            function startReplay() {
+                term.reset();
+                term.resize(parseInt(dom.term_x.value), parseInt(dom.term_y.value));
+                dom.replayButton.disabled = true;
+                let timingText = dom.timingInput.value.trim();
+                try {
+                    timingText = decoder.decode(ungzipBase64(timingText));
+                } catch (e) {
+                    term.write(`\r\nエラー: タイミングデータの解凍に失敗しました。\r\n詳細: ${e.message}\r\n`);
+                    dom.replayButton.disabled = false;
+                    return;
+                }            
+                const logGzipBase64Text = dom.logInput.value.trim();
+                if (!timingText || !logGzipBase64Text) {
+                    term.write('エラー: タイミングデータまたはログデータ(Base64)を入力してください。');
+                    dom.replayButton.disabled = false;
+                    return;
+                }
+
+                let logBin;
+                let logIndex;
+                try {
+                    logBin = ungzipBase64(logGzipBase64Text);
+                    let i = getFirstLineIndex(logBin);
+                    if (i < 0) {
+                        term.write('エラー: ログデータに先頭行が見当たりません');
+                        dom.replayButton.disabled = false;
+                        return;
+                    }
+                    logIndex = i;
+                    line = decoder.decode(logBin.subarray(0, logIndex));
+
+                    const m = line.match(sizere);
+                    if (m && m.length === 3) {
+                        dom.term_x.value = m[1];
+                        dom.term_y.value = m[2];
+                        term.resize(parseInt(dom.term_x.value), parseInt(dom.term_y.value));
+                    }
+                } catch (e) {
+                    term.write(`\r\nエラー: ログデータの解凍に失敗しました。データが不正な可能性があります。\r\n詳細: ${e.message}\r\n`);
+                    dom.replayButton.disabled = false;
+                    return;
+                }
+
+                const timingLines = timingText.split('\n').filter(line => line.trim() !== '');
+                const timingData = timingLines.map(line => {
+                    const parts = line.trim().split(/\s+/);
+                    return {
+                        delay: parseFloat(parts[0]),
+                        size: parseInt(parts[1], 10)
+                    };
+                });
+
+                let dataIndex = 0;
+
+                function playNextChunk() {
+                    if (dataIndex >= timingData.length) {
+                        term.write('\r\n\n＝＝＝＝ 再生終了 ＝＝＝＝\r\n');
+                        dom.replayButton.disabled = false;
+                        return;
+                    }
+                    const chunk = timingData[dataIndex];
+                    const delayMs = chunk.delay * 1000;
+                    const size = chunk.size;
+                    const outputChunk = decoder.decode(logBin.subarray(logIndex, logIndex + size));
+                    term.write(outputChunk);
+                    logIndex += size;
+                    dataIndex++;
+
+                    setTimeout(playNextChunk, delayMs);
+                }
+                playNextChunk();
+                const url = new URL(location.href);
+                url.searchParams.set('timing', dom.timingInput.value);
+                url.searchParams.set('log', dom.logInput.value)
+                url.searchParams.set('cols', dom.term_x.value)
+                url.searchParams.set('rows', dom.term_y.value)
+                document.getElementById('replay-url').href = url;
+                document.getElementById('replay-url').textContent = url;
+            }
+
+            setParamsFromQueryString();
+            dom.replayButton.addEventListener('click', startReplay);
+            term.write('⬆️ 上の入力欄にデータを入力し、「再生開始」ボタンを押してください。');
+        });
+    </script>
+</body>
+</html>
