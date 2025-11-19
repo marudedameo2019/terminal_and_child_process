@@ -57,7 +57,7 @@ void log(const std::wstring& s) {
     LeaveCriticalSection(&sec);
 }
 
-void communicate_out(void *args) {
+DWORD communicate_out(void *args) {
     auto* pArgs = reinterpret_cast<arg_communicate*>(args);
 
     using namespace std;
@@ -73,9 +73,10 @@ void communicate_out(void *args) {
     DWORD dwRead = 1;
     script << "Script started on 2025-01-01 00:00:00+09:00 [TERM=\"xterm-256color\" TTY=\"/dev/pty0\" COLUMNS=\"" << sizeConsole.X << "\" LINES=\"" << sizeConsole.Y << "\"]" << endl;
     while (dwRead > 0) {
+        dwRead = 0;
         if (! ReadFile(pArgs->hPtyOutPipe, cbuff.data(), (DWORD)cbuff.size(), &dwRead, NULL)) {
             auto err = GetLastError();
-            if ((err == ERROR_BROKEN_PIPE) || (err == ERROR_INVALID_HANDLE)) break;
+            if (err == ERROR_BROKEN_PIPE) break;
             DIE();
         }
         if (dwRead == 0) break;
@@ -99,9 +100,10 @@ void communicate_out(void *args) {
     script.flush();
     CloseHandle(pArgs->hPtyOutPipe);
     log(L"[PipeThreadOut]finished...");
+    return 0;
 }
 
-void communicate_in(void *args) {
+DWORD communicate_in(void *args) {
     auto* pArgs = reinterpret_cast<arg_communicate*>(args);
 
     int fd = _open_osfhandle(reinterpret_cast<intptr_t>(pArgs->hPtyInPipe), _O_WRONLY | _O_BINARY);
@@ -140,10 +142,12 @@ void communicate_in(void *args) {
     if (ofp) fclose(ofp);
     CloseHandle(pArgs->hPtyInPipe);
     log(L"[PipeThreadIn]finished...");
+    return 0;
 }
 
 #define STDOUT_FILE "typescript"
 #define TIMING_FILE "file.tm"
+#define LOG_FILE "nul"
 
 int record(char* cmdline) {
     using namespace std;
@@ -158,7 +162,7 @@ int record(char* cmdline) {
     memset(&stdinOL, 0, sizeof(stdinOL));
     InitializeCriticalSection(&sec);
 
-    logging.open("nul");
+    logging.open(LOG_FILE);
 
     DWORD consoleMode = 0;
     if (! GetConsoleMode(hStdin, &consoleMode)) DIE();
@@ -182,9 +186,12 @@ int record(char* cmdline) {
     CloseHandle(hPtyOut);
 
     arg_communicate args = {hPtyInPipe, hPtyOutPipe, STDOUT_FILE, TIMING_FILE};
-    HANDLE hOutThread = reinterpret_cast<HANDLE>(_beginthread(communicate_out, 0, &args));
+
+    // _beginthread()は自動で閉じるしexを使ってもHANDLEは綺麗に扱えないので
+    // 2つしかスレッドを作らないこのコードではCreateThreadを直に使う
+    HANDLE hOutThread = CreateThread(NULL, 0, communicate_out, &args, 0, NULL);
     if (hOutThread == INVALID_HANDLE_VALUE) DIE();
-    HANDLE hInThread = reinterpret_cast<HANDLE>(_beginthread(communicate_in, 0, &args));
+    HANDLE hInThread = CreateThread(NULL, 0, communicate_in, &args, 0, NULL);
     if (hInThread == INVALID_HANDLE_VALUE) DIE();
     
     STARTUPINFOEXA si{};
@@ -197,24 +204,25 @@ int record(char* cmdline) {
     if (! UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hPty, sizeof(HPCON), NULL, NULL)) DIE();
     PROCESS_INFORMATION pi;
     if (! CreateProcessA(NULL, cmdline, NULL, NULL, FALSE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL, &si.StartupInfo, &pi)) DIE();
-    
+    if (! WaitForInputIdle(pi.hProcess, INFINITE)) DIE();
+
     DWORD rslt;
     constexpr DWORD timeout_ms = INFINITE; //10000;
     if (WaitForSingleObject(pi.hThread, timeout_ms) != WAIT_OBJECT_0) DIE();
     if (WaitForSingleObject(pi.hProcess, timeout_ms) != WAIT_OBJECT_0) DIE();
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    CloseHandle(hPtyInPipe);
-    CloseHandle(hPtyOutPipe);
     log(L"[MainThread]calling CancelIoEx(hStdin)...");
     stopRequest = TRUE;
     CancelIoEx(hStdin, &stdinOL);
     if ((rslt = WaitForSingleObject(hInThread, timeout_ms)) != WAIT_OBJECT_0) DIE();
+    CloseHandle(hInThread);
+    // 標準出力側のパイプに読み込ませる/BROKEN PIPEするには疑似コンソールのCloseが必要
+    ClosePseudoConsole(hPty);
+    log(L"[MainThread]hPty closed...");
+    DeleteProcThreadAttributeList(si.lpAttributeList);
     if ((rslt = WaitForSingleObject(hOutThread, timeout_ms)) != WAIT_OBJECT_0) DIE();
     CloseHandle(hOutThread);
-    CloseHandle(hInThread);
-    DeleteProcThreadAttributeList(si.lpAttributeList);
-    ClosePseudoConsole(hPty);
     log(L"[MainThread]Main thread finished...");
     return 0;
 }
