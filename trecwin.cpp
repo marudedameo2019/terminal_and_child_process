@@ -166,11 +166,16 @@ int record(char* cmdline) {
 
     DWORD consoleMode = 0;
     if (! GetConsoleMode(hStdin, &consoleMode)) DIE();
-    wcout << L"Console mode(stdout): " << consoleMode << L" -> " << (consoleMode & (~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT))) << endl;
-    if (! SetConsoleMode(hStdin, consoleMode & (~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT)))) DIE();
+    auto newConsoleMode = consoleMode;
+    newConsoleMode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+    newConsoleMode &= ~(ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
+    wcout << L"Console mode(stdin): " << hex << "0x" << consoleMode << L" -> " << "0x" << newConsoleMode << dec << endl;
+    if (! SetConsoleMode(hStdin, newConsoleMode)) DIE();
     if (! GetConsoleMode(hStdout, &consoleMode)) DIE();
-    wcout << L"Console mode(stdout): " << consoleMode << L" -> " << (consoleMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) << endl;
-    if (! SetConsoleMode(hStdout, consoleMode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) DIE();
+    newConsoleMode = consoleMode;
+    newConsoleMode |= ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    wcout << L"Console mode(stdout): " << hex << "0x" << consoleMode << L" -> " << "0x" << newConsoleMode << dec << endl;
+    if (! SetConsoleMode(hStdout, newConsoleMode)) DIE();
 
     if (! CreatePipe(&hPtyIn, &hPtyInPipe, NULL, 0)) DIE();
     if (! CreatePipe(&hPtyOutPipe, &hPtyOut, NULL, 0)) DIE();
